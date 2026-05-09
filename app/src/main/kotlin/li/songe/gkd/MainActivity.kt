@@ -344,7 +344,12 @@ class MainActivity : ComponentActivity() {
         LogUtils.d()
         activityVisibleState++
         if (topActivityFlow.value.appId != META.appId) {
-            updateTopActivity(META.appId, MainActivity::class.jvmName)
+            synchronized(topActivityFlow) {
+                updateTopActivity(
+                    META.appId,
+                    MainActivity::class.jvmName
+                )
+            }
         }
     }
 

@@ -82,7 +82,13 @@ class A11yRuleEngine(val service: A11yCommonImpl) {
     fun onScreenForcedActive() {
         // 关闭屏幕 -> Activity::onStop -> 点亮屏幕 -> Activity::onStart -> Activity::onResume
         val a = topActivityFlow.value
-        updateTopActivity(a.appId, a.activityId, scene = ActivityScene.ScreenOn)
+        synchronized(topActivityFlow) {
+            updateTopActivity(
+                a.appId,
+                a.activityId,
+                scene = ActivityScene.ScreenOn
+            )
+        }
         startQueryJob()
     }
 
@@ -102,6 +108,8 @@ class A11yRuleEngine(val service: A11yCommonImpl) {
 
     private val scope get() = service.scope
 
+    @Volatile
+    private var latestStateEvent: A11yEvent? = null
     private var lastContentEventTime = 0L
     private var lastEventTime = 0L
     private val eventDeque = ArrayDeque<A11yEvent>()
@@ -143,6 +151,9 @@ class A11yRuleEngine(val service: A11yCommonImpl) {
             return
         }
         lastEventTime = event.eventTime
+        if (event.eventType == STATE_CHANGED) {
+            latestStateEvent = a11yEvent
+        }
         synchronized(eventDeque) { eventDeque.addLast(a11yEvent) }
         scope.launch(eventDispatcher) { consumeEvent(a11yEvent) }
     }
@@ -166,19 +177,23 @@ class A11yRuleEngine(val service: A11yCommonImpl) {
         }
         if (rightAppId == evAppId) {
             if (latestEvent.type == STATE_CHANGED) {
-                // tv.danmaku.bili, com.miui.home, com.miui.home.launcher.Launcher
-                if (isActivity(evAppId, evActivityId)) {
-                    updateTopActivity(evAppId, evActivityId)
+                synchronized(topActivityFlow) {
+                    // tv.danmaku.bili, com.miui.home, com.miui.home.launcher.Launcher
+                    if (isActivity(evAppId, evActivityId)) {
+                        updateTopActivity(evAppId, evActivityId)
+                    }
                 }
             }
         }
         if (rightAppId != topActivityFlow.value.appId) {
-            // 从 锁屏，下拉通知栏 返回等情况, 应用不会发送事件, 但是系统组件会发送事件
-            val topCpn = shizukuContextFlow.value.topCpn()
-            if (topCpn?.packageName == rightAppId) {
-                updateTopActivity(topCpn.packageName, topCpn.className)
-            } else {
-                updateTopActivity(rightAppId, null)
+            synchronized(topActivityFlow) {
+                // 从 锁屏，下拉通知栏 返回等情况, 应用不会发送事件, 但是系统组件会发送事件
+                val topCpn = shizukuContextFlow.value.topCpn()
+                if (topCpn?.packageName == rightAppId) {
+                    updateTopActivity(topCpn.packageName, topCpn.className)
+                } else {
+                    updateTopActivity(rightAppId, null)
+                }
             }
         }
         val activityRule = activityRuleFlow.value
@@ -239,17 +254,21 @@ class A11yRuleEngine(val service: A11yCommonImpl) {
         if (byEvent == null && service.justStarted && !hasOthersService) return checkFutureStartJob()
         scope.launchTry(queryDispatcher) {
             querying = true
-            val st = System.currentTimeMillis()
+            val st = if (META.debuggable) System.currentTimeMillis() else 0L
             try {
-                Log.d(
-                    "A11yRuleEngine",
-                    "startQueryJob start byEvent=${byEvent != null}, byForced=$byForced, byDelayRule=${byDelayRule != null}"
-                )
+                if (META.debuggable) {
+                    Log.d(
+                        "A11yRuleEngine",
+                        "startQueryJob start byEvent=${byEvent != null}, byForced=$byForced, byDelayRule=${byDelayRule != null}"
+                    )
+                }
                 queryAction(byEvent, byForced, byDelayRule)
             } finally {
                 checkFutureStartJob()
-                val et = System.currentTimeMillis() - st
-                Log.d("A11yRuleEngine", "startQueryJob end $et ms")
+                if (META.debuggable) {
+                    val et = System.currentTimeMillis() - st
+                    Log.d("A11yRuleEngine", "startQueryJob end $et ms")
+                }
                 querying = false
             }
         }
@@ -272,11 +291,13 @@ class A11yRuleEngine(val service: A11yCommonImpl) {
 
     private fun fixAppId(rightAppId: String) {
         if (topActivityFlow.value.appId == rightAppId) return
-        val topCpn = shizukuContextFlow.value.topCpn()
-        if (topCpn?.packageName == rightAppId) {
-            updateTopActivity(topCpn.packageName, topCpn.className)
-        } else {
-            updateTopActivity(rightAppId, null)
+        synchronized(topActivityFlow) {
+            val topCpn = shizukuContextFlow.value.topCpn()
+            if (topCpn?.packageName == rightAppId) {
+                updateTopActivity(topCpn.packageName, topCpn.className)
+            } else {
+                updateTopActivity(rightAppId, null)
+            }
         }
         scope.launch(actionDispatcher) {
             delay(300)
@@ -289,6 +310,7 @@ class A11yRuleEngine(val service: A11yCommonImpl) {
         byForced: Boolean = false,
         delayRule: ResolvedRule? = null,
     ) {
+        val tempStateEvent = latestStateEvent
         val newEvents = if (delayRule != null) {// 延迟规则不消耗事件
             null
         } else {
@@ -319,7 +341,7 @@ class A11yRuleEngine(val service: A11yCommonImpl) {
                 }
             }
         }
-        val activityRule = activityRuleFlow.value
+        val activityRule = synchronized(topActivityFlow) { activityRuleFlow.value }
         activityRule.currentRules.forEach { rule ->
             if (rule.status == RuleStatus.Status3 && rule.matchDelayJob.value == null) {
                 rule.matchDelayJob.value = scope.launch(actionDispatcher) {
@@ -354,7 +376,7 @@ class A11yRuleEngine(val service: A11yCommonImpl) {
         }
         for (rule in activityRule.priorityRules) { // 规则数量有可能过多导致耗时过长
             if (!effective) return
-            if (activityRule !== activityRuleFlow.value) break
+            if (checkOutDate(activityRule, tempStateEvent)) break
             if (delayRule != null && delayRule !== rule) continue
             if (rule.status != RuleStatus.StatusOk) continue
             if (byForced && !rule.checkForced()) continue
@@ -382,7 +404,6 @@ class A11yRuleEngine(val service: A11yCommonImpl) {
             }
             if (!matchApp) continue
             val target = a11yContext.queryRule(rule, nodeVal) ?: continue
-            if (activityRule !== activityRuleFlow.value) break
             if (rule.checkDelay() && rule.actionDelayJob.value == null) {
                 rule.actionDelayJob.value = scope.launch(actionDispatcher) {
                     delay(rule.actionDelay)
@@ -392,6 +413,7 @@ class A11yRuleEngine(val service: A11yCommonImpl) {
                 continue
             }
             if (rule.status != RuleStatus.StatusOk) break
+            if (checkOutDate(activityRule, tempStateEvent)) break
             val actionResult = rule.performAction(target)
             if (actionResult.result) {
                 val topActivity = topActivityFlow.value
@@ -406,6 +428,17 @@ class A11yRuleEngine(val service: A11yCommonImpl) {
                 addActionLog(rule, topActivity, target, actionResult)
             }
         }
+    }
+
+    private fun checkOutDate(
+        activityRule: ActivityRule,
+        stateEvent: A11yEvent?
+    ): Boolean {
+        if (stateEvent !== latestStateEvent) return true
+        synchronized(topActivityFlow) {
+            if (activityRule !== activityRuleFlow.value) return true
+        }
+        return false
     }
 
     companion object {

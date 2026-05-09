@@ -110,12 +110,14 @@ class ActivityService : OverlayWindowService(
                 }
             }
             if (!A11yService.isRunning.value) {
-                shizukuContextFlow.value.topCpn()?.let { cpn ->
-                    updateTopActivity(
-                        appId = cpn.packageName,
-                        activityId = cpn.className,
-                        scene = ActivityScene.TaskStack,
-                    )
+                synchronized(topActivityFlow) {
+                    shizukuContextFlow.value.topCpn()?.let { cpn ->
+                        updateTopActivity(
+                            appId = cpn.packageName,
+                            activityId = cpn.className,
+                            scene = ActivityScene.TaskStack,
+                        )
+                    }
                 }
             }
         }

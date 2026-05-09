@@ -4,7 +4,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
@@ -85,7 +84,6 @@ private val a11yEventTransform by lazy {
             }
         },
         getInvoke = { target, name, args ->
-            Log.d("A11yEventTransform", "getInvoke: $name(${args.joinToString()}) on $target")
             when (target) {
                 is Int -> getIntInvoke(target, name, args)
                 is Boolean -> getBooleanInvoke(target, name, args)

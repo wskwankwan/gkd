@@ -6,6 +6,7 @@ import android.content.ComponentName
 import android.os.Parcel
 import android.view.Display
 import li.songe.gkd.a11y.ActivityScene
+import li.songe.gkd.a11y.topActivityFlow
 import li.songe.gkd.a11y.updateTopActivity
 import li.songe.gkd.util.AndroidTarget
 
@@ -18,13 +19,11 @@ object FixedTaskStackListener : ITaskStackListener.Stub() {
         true
     }
 
-    override fun onTaskStackChanged() {
+    override fun onTaskStackChanged(): Unit = synchronized(topActivityFlow) {
         val cpn = shizukuContextFlow.value.topCpn() ?: return
-        synchronized(this) {
-            if (lastFront.first > 0 && lastFront.second == cpn && System.currentTimeMillis() - lastFront.first > 200) {
-                lastFront = defaultFront
-                return
-            }
+        if (lastFront.first > 0 && lastFront.second == cpn && System.currentTimeMillis() - lastFront.first > 200) {
+            lastFront = defaultFront
+            return
         }
         updateTopActivity(
             appId = cpn.packageName,
@@ -35,11 +34,11 @@ object FixedTaskStackListener : ITaskStackListener.Stub() {
 
     private val defaultFront = 0L to ComponentName("", "")
     private var lastFront = defaultFront
-    private fun onTaskMovedToFrontCompat(cpn: ComponentName? = null) {
+    private fun onTaskMovedToFrontCompat(
+        cpn: ComponentName? = null
+    ): Unit = synchronized(topActivityFlow) {
         val cpn = cpn ?: shizukuContextFlow.value.topCpn() ?: return
-        synchronized(this) {
-            lastFront = System.currentTimeMillis() to cpn
-        }
+        lastFront = System.currentTimeMillis() to cpn
         updateTopActivity(
             appId = cpn.packageName,
             activityId = cpn.className,

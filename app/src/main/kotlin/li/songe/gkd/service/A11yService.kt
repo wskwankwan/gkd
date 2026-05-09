@@ -124,10 +124,12 @@ abstract class A11yService : AccessibilityService(), OnA11yLife by DefaultA11yLi
         useAliveOverlayView()
         onCreated { StatusService.autoStart() }
         onDestroyed {
-            shizukuContextFlow.value.topCpn()?.let { cpn ->
-                // com.android.systemui
-                if (!topActivityFlow.value.sameAs(cpn.packageName, cpn.className)) {
-                    updateTopActivity(cpn.packageName, cpn.className)
+            synchronized(topActivityFlow) {
+                shizukuContextFlow.value.topCpn()?.let { cpn ->
+                    // com.android.systemui
+                    if (!topActivityFlow.value.sameAs(cpn.packageName, cpn.className)) {
+                        updateTopActivity(cpn.packageName, cpn.className)
+                    }
                 }
             }
         }

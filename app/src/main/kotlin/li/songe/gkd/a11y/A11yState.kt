@@ -2,6 +2,7 @@ package li.songe.gkd.a11y
 
 import android.content.ComponentName
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.provider.Settings
 import android.util.LruCache
 import android.view.accessibility.AccessibilityNodeInfo
@@ -82,7 +83,7 @@ private object ActivityCache : LruCache<Pair<String, String>, Boolean>(256) {
             PKG_FLAGS
         )
         true
-    } catch (_: Exception) {
+    } catch (_: PackageManager.NameNotFoundException) {
         false
     }
 }
@@ -139,7 +140,7 @@ sealed class ActivityScene {
     data object TaskStack : ActivityScene()
 }
 
-@Synchronized
+// 外部必须使用 synchronized(topActivityFlow) 来保证更新的原子性
 fun updateTopActivity(
     appId: String,
     activityId: String?,
@@ -151,12 +152,14 @@ fun updateTopActivity(
         updateTopTaskAppId(appId)
     }
     val oldActivity = topActivityFlow.value
+    val oldActivityRule = activityRuleFlow.value
+    val idChanged = (scene == ActivityScene.ScreenOn || appId != oldActivityRule.topActivity.appId)
     val isSame = scene != ActivityScene.ScreenOn && oldActivity.sameAs(appId, activityId)
     if (scene == ActivityScene.TaskStack) {
         lastActivityForceUpdateTime = t
     } else if (scene == ActivityScene.A11y) {
-        if (lastActivityForceUpdateTime > 0) {
-            // ITaskStackListener 的变速快于无障碍
+        if (idChanged && lastActivityForceUpdateTime > 0) {
+            // ITaskStackListener 大部分场景快于无障碍
             if (t - lastActivityForceUpdateTime < 1000) return
             if (activityId != null && t - lastActivityForceUpdateTime < 3000) return
         }
@@ -192,10 +195,7 @@ fun updateTopActivity(
         appScope.launchTry { DbSet.activityLogDao.deleteKeepLatest() }
     }
     val topActivity = topActivityFlow.value
-    val oldActivityRule = activityRuleFlow.value
     val ruleSummary = ruleSummaryFlow.value
-    val idChanged = (scene == ActivityScene.ScreenOn ||
-            topActivity.appId != oldActivityRule.topActivity.appId)
     val topChanged = idChanged || oldActivityRule.topActivity != topActivity
     val ruleChanged = oldActivityRule.ruleSummary !== ruleSummary
     if (topChanged || ruleChanged) {
